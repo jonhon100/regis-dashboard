@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Regis Dashboard</title>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      background: #f5f6f8;
+      color: #222;
+    }
+
+    .container {
+      max-width: 850px;
+      margin: 40px auto;
+      padding: 20px;
+    }
+
+    h1 {
+      margin-bottom: 25px;
+    }
+
+    .card {
+      background: white;
+      padding: 20px;
+      border-radius: 10px;
+      margin-bottom: 20px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+    }
+
+    input, textarea, select, button {
+      font-size: 16px;
+      padding: 10px;
+      margin: 5px 0;
+      box-sizing: border-box;
+    }
+
+    input, textarea, select {
+      width: 100%;
+    }
+
+    button {
+      cursor: pointer;
+    }
+
+    .task {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 10px 0;
+      border-bottom: 1px solid #eee;
+    }
+
+    .task input[type="checkbox"] {
+      width: auto;
+      margin-top: 5px;
+    }
+
+    .task-content {
+      flex: 1;
+    }
+
+    .task-title {
+      font-size: 17px;
+    }
+
+    .task-notes {
+      font-size: 14px;
+      color: #666;
+      margin-top: 4px;
+    }
+
+    .completed .task-title {
+      text-decoration: line-through;
+      color: #999;
+    }
+
+    .section-title {
+      margin-top: 10px;
+      padding-bottom: 8px;
+      border-bottom: 2px solid #ddd;
+    }
+
+    #app {
+      display: none;
+    }
+
+    .error {
+      color: #b00020;
+      margin-top: 10px;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+
+    <div id="login" class="card">
+      <h1>Regis Dashboard</h1>
+
+      <input
+        id="email"
+        type="email"
+        placeholder="Email address"
+      />
+
+      <input
+        id="password"
+        type="password"
+        placeholder="Password"
+      />
+
+      <button onclick="signIn()">Sign In</button>
+
+      <div id="loginError" class="error"></div>
+    </div>
+
+
+    <div id="app">
+
+      <h1>Regis Dashboard</h1>
+
+      <div class="card">
+        <h2>Add Task</h2>
+
+        <input
+          id="newTitle"
+          type="text"
+          placeholder="What needs doing?"
+        />
+
+        <textarea
+          id="newNotes"
+          placeholder="Notes (optional)"
+        ></textarea>
+
+        <select id="newSection">
+          <option value="important_today">Important Today</option>
+          <option value="today">Today</option>
+          <option value="general" selected>General</option>
+        </select>
+
+        <button onclick="addTask()">Add Task</button>
+      </div>
+
+
+      <div class="card">
+        <h2 class="section-title">Important Today</h2>
+        <div id="important_today"></div>
+      </div>
+
+      <div class="card">
+        <h2 class="section-title">Today</h2>
+        <div id="today"></div>
+      </div>
+
+      <div class="card">
+        <h2 class="section-title">General</h2>
+        <div id="general"></div>
+      </div>
+
+      <button onclick="signOut()">Sign Out</button>
+
+    </div>
+
+  </div>
+
+
+  <script>
+    const SUPABASE_URL = "https://wpxfslsluveavxmfoboa.supabase.co";
+    const SUPABASE_KEY = "sb_publishable_jPPEJjRJi5iNXATtffTQ9g_ZV_GF8gX";
+
+    const client = supabase.createClient(
+      SUPABASE_URL,
+      SUPABASE_KEY
+    );
+
+
+    async function signIn() {
+      const email = document.getElementById("email").value;
+      const password = document.getElementById("password").value;
+
+      const { error } = await client.auth.signInWithPassword({
+        email,
+        password
+      });
+
+      if (error) {
+        document.getElementById("loginError").textContent =
+          error.message;
+        return;
+      }
+
+      showApp();
+    }
+
+
+    async function signOut() {
+      await client.auth.signOut();
+      location.reload();
+    }
+
+
+    async function showApp() {
+      document.getElementById("login").style.display = "none";
+      document.getElementById("app").style.display = "block";
+
+      await loadTasks();
+    }
+
+
+    async function loadTasks() {
+      const { data, error } = await client
+        .from("tasks")
+        .select("*")
+        .order("sort_order", { ascending: true });
+
+      if (error) {
+        console.error(error);
+        return;
+      }
+
+      document.getElementById("important_today").innerHTML = "";
+      document.getElementById("today").innerHTML = "";
+      document.getElementById("general").innerHTML = "";
+
+      data.forEach(renderTask);
+    }
+
+
+    function renderTask(task) {
+      const container =
+        document.getElementById(task.section || "general");
+
+      const row = document.createElement("div");
+
+      row.className =
+        "task" + (task.completed ? " completed" : "");
+
+      row.innerHTML = `
+        <input
+          type="checkbox"
+          ${task.completed ? "checked" : ""}
+          onchange="toggleTask(${task.id}, this.checked)"
+        />
+
+        <div class="task-content">
+          <div class="task-title">
+            ${escapeHtml(task.title || "")}
+          </div>
+
+          ${
+            task.notes
+              ? `<div class="task-notes">
+                   ${escapeHtml(task.notes)}
+                 </div>`
+              : ""
+          }
+        </div>
+
+        <button onclick="deleteTask(${task.id})">
+          Delete
+        </button>
+      `;
+
+      container.appendChild(row);
+    }
+
+
+    async function addTask() {
+      const title =
+        document.getElementById("newTitle").value.trim();
+
+      const notes =
+        document.getElementById("newNotes").value.trim();
+
+      const section =
+        document.getElementById("newSection").value;
+
+      if (!title) return;
+
+      const { data: existing } = await client
+        .from("tasks")
+        .select("sort_order")
+        .eq("section", section)
+        .order("sort_order", { ascending: false })
+        .limit(1);
+
+      const nextOrder =
+        existing && existing.length
+          ? (existing[0].sort_order || 0) + 1
+          : 1;
+
+      const { error } = await client
+        .from("tasks")
+        .insert({
+          title,
+          notes: notes || null,
+          section,
+          completed: false,
+          sort_order: nextOrder
+        });
+
+      if (error) {
+        alert(error.message);
+        return;
+      }
+
+      document.getElementById("newTitle").value = "";
+      document.getElementById("newNotes").value = "";
+
+      await loadTasks();
+    }
+
+
+    async function toggleTask(id, completed) {
+      const { error } = await client
+        .from("tasks")
+        .update({ completed })
+        .eq("id", id);
+
+      if (error) {
+        alert(error.message);
+        return;
+      }
+
+      await loadTasks();
+    }
+
+
+    async function deleteTask(id) {
+      const { error } = await client
+        .from("tasks")
+        .delete()
+        .eq("id", id);
+
+      if (error) {
+        alert(error.message);
+        return;
+      }
+
+      await loadTasks();
+    }
+
+
+    function escapeHtml(value) {
+      const div = document.createElement("div");
+      div.textContent = value;
+      return div.innerHTML;
+    }
+
+
+    async function checkSession() {
+      const {
+        data: { session }
+      } = await client.auth.getSession();
+
+      if (session) {
+        showApp();
+      }
+    }
+
+    checkSession();
+  </script>
+
+</body>
+</html>
