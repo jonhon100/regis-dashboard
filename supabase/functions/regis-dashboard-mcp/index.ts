@@ -152,6 +152,7 @@ function makeServer(authorizationHeader: string | undefined) {
         include_completed: z.boolean().default(false).describe('Whether completed tasks should be included'),
       },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      securitySchemes: oauthSecurity,
       _meta: { securitySchemes: oauthSecurity },
     },
     async ({ section, include_completed }) => {
@@ -192,6 +193,7 @@ function makeServer(authorizationHeader: string | undefined) {
       description: 'Read one task, including its notes, by its exact task ID.',
       inputSchema: { task_id: z.string().regex(/^\d+$/).describe('Exact task ID returned by list_tasks') },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      securitySchemes: oauthSecurity,
       _meta: { securitySchemes: oauthSecurity },
     },
     async ({ task_id }) => {
@@ -225,6 +227,7 @@ function makeServer(authorizationHeader: string | undefined) {
         section: z.enum(SECTIONS),
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+      securitySchemes: oauthSecurity,
       _meta: { securitySchemes: oauthSecurity },
     },
     async ({ title, notes, section }) => {
@@ -264,6 +267,7 @@ function makeServer(authorizationHeader: string | undefined) {
         completed: z.boolean().optional(),
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      securitySchemes: oauthSecurity,
       _meta: { securitySchemes: oauthSecurity },
     },
     async ({ task_id, title, notes, section, sort_order, completed }) => {
@@ -321,6 +325,7 @@ function makeServer(authorizationHeader: string | undefined) {
         confirm_title: z.string().describe('Exact current task title, copied from list_tasks'),
       },
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+      securitySchemes: oauthSecurity,
       _meta: { securitySchemes: oauthSecurity },
     },
     async ({ task_id, confirm_title }) => {
@@ -350,6 +355,57 @@ function makeServer(authorizationHeader: string | undefined) {
   return server
 }
 
+type ToolListEnvelope = {
+  result?: {
+    tools?: Array<{
+      securitySchemes?: unknown
+      _meta?: { securitySchemes?: unknown }
+    }>
+  }
+}
+
+function addTopLevelToolSecuritySchemes(value: unknown) {
+  if (!value || typeof value !== 'object') return value
+
+  const envelope = value as ToolListEnvelope
+  for (const tool of envelope.result?.tools ?? []) {
+    // The MCP TypeScript SDK currently preserves OpenAI's compatibility
+    // mirror in _meta but omits the documented top-level extension field.
+    // Add it to the wire response so ChatGPT can bind OAuth to each tool.
+    tool.securitySchemes ??= tool._meta?.securitySchemes ?? oauthSecurity
+  }
+  return envelope
+}
+
+async function exposeTopLevelToolSecuritySchemes(response: Response) {
+  const contentType = response.headers.get('content-type') ?? ''
+  const body = await response.text()
+  let decoratedBody = body
+
+  if (contentType.includes('text/event-stream')) {
+    decoratedBody = body.split('\n').map((line) => {
+      const dataOffset = line.startsWith('data: ') ? 6 : line.startsWith('data:') ? 5 : -1
+      if (dataOffset < 0) return line
+
+      try {
+        return `data: ${JSON.stringify(addTopLevelToolSecuritySchemes(JSON.parse(line.slice(dataOffset))))}`
+      } catch {
+        return line
+      }
+    }).join('\n')
+  } else if (contentType.includes('application/json')) {
+    try {
+      decoratedBody = JSON.stringify(addTopLevelToolSecuritySchemes(JSON.parse(body)))
+    } catch {
+      decoratedBody = body
+    }
+  }
+
+  const headers = new Headers(response.headers)
+  headers.delete('content-length')
+  return new Response(decoratedBody, { status: response.status, statusText: response.statusText, headers })
+}
+
 const app = new Hono().basePath('/regis-dashboard-mcp')
 
 app.get('/health', (context) => context.json({ ok: true, service: 'regis-dashboard-mcp' }))
@@ -363,6 +419,10 @@ app.get('/.well-known/oauth-protected-resource', (context) => context.json({
 
 app.all('/', async (context) => {
   const authorizationHeader = context.req.header('Authorization')
+  const rawRequest = context.req.raw
+  const requestEnvelope = rawRequest.method === 'POST'
+    ? await rawRequest.clone().json().catch(() => null) as { method?: string } | null
+    : null
 
   // Supabase cannot route the RFC 9728 origin-level well-known path to an
   // individual Edge Function. Advertise the function-scoped metadata URL in
@@ -382,7 +442,10 @@ app.all('/', async (context) => {
   const server = makeServer(authorizationHeader)
   const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined })
   await server.connect(transport)
-  return transport.handleRequest(context.req.raw)
+  const response = await transport.handleRequest(rawRequest)
+  return requestEnvelope?.method === 'tools/list'
+    ? exposeTopLevelToolSecuritySchemes(response)
+    : response
 })
 
 Deno.serve(app.fetch)
