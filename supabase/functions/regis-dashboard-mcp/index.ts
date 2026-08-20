@@ -152,6 +152,7 @@ function makeServer(authorizationHeader: string | undefined) {
         include_completed: z.boolean().default(false).describe('Whether completed tasks should be included'),
       },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      securitySchemes: oauthSecurity,
       _meta: { securitySchemes: oauthSecurity },
     },
     async ({ section, include_completed }) => {
@@ -192,6 +193,7 @@ function makeServer(authorizationHeader: string | undefined) {
       description: 'Read one task, including its notes, by its exact task ID.',
       inputSchema: { task_id: z.string().regex(/^\d+$/).describe('Exact task ID returned by list_tasks') },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      securitySchemes: oauthSecurity,
       _meta: { securitySchemes: oauthSecurity },
     },
     async ({ task_id }) => {
@@ -225,6 +227,7 @@ function makeServer(authorizationHeader: string | undefined) {
         section: z.enum(SECTIONS),
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+      securitySchemes: oauthSecurity,
       _meta: { securitySchemes: oauthSecurity },
     },
     async ({ title, notes, section }) => {
@@ -264,6 +267,7 @@ function makeServer(authorizationHeader: string | undefined) {
         completed: z.boolean().optional(),
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      securitySchemes: oauthSecurity,
       _meta: { securitySchemes: oauthSecurity },
     },
     async ({ task_id, title, notes, section, sort_order, completed }) => {
@@ -321,6 +325,7 @@ function makeServer(authorizationHeader: string | undefined) {
         confirm_title: z.string().describe('Exact current task title, copied from list_tasks'),
       },
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+      securitySchemes: oauthSecurity,
       _meta: { securitySchemes: oauthSecurity },
     },
     async ({ task_id, confirm_title }) => {
