@@ -57,6 +57,7 @@ These steps are required once after this branch is reviewed and merged.
    ```
 
 6. Confirm the MCP and OAuth discovery endpoints respond:
+   - `https://jonhon100.github.io/regis-dashboard/oauth/consent/`
    - `https://wpxfslsluveavxmfoboa.supabase.co/functions/v1/regis-dashboard-mcp/health`
    - `https://wpxfslsluveavxmfoboa.supabase.co/functions/v1/regis-dashboard-mcp/.well-known/oauth-protected-resource`
    - `https://wpxfslsluveavxmfoboa.supabase.co/.well-known/oauth-authorization-server/auth/v1`
@@ -65,7 +66,9 @@ These steps are required once after this branch is reviewed and merged.
    MCP URL returns `401 Unauthorized` with a `WWW-Authenticate` header whose
    `resource_metadata` value is the function-scoped metadata URL above. The
    authorization-server discovery response must be JSON and must not report
-   `feature_disabled`.
+   `feature_disabled`; with dynamic registration enabled, it must advertise a
+   `registration_endpoint` and `code_challenge_methods_supported` containing
+   `S256`.
 
 No changes to the `tasks` table or its data are required.
 
