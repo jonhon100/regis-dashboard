@@ -56,9 +56,16 @@ These steps are required once after this branch is reviewed and merged.
    supabase functions deploy regis-dashboard-mcp --no-verify-jwt
    ```
 
-6. Confirm both endpoints respond:
+6. Confirm the MCP and OAuth discovery endpoints respond:
    - `https://wpxfslsluveavxmfoboa.supabase.co/functions/v1/regis-dashboard-mcp/health`
    - `https://wpxfslsluveavxmfoboa.supabase.co/functions/v1/regis-dashboard-mcp/.well-known/oauth-protected-resource`
+   - `https://wpxfslsluveavxmfoboa.supabase.co/.well-known/oauth-authorization-server/auth/v1`
+
+7. Before adding the app in ChatGPT, confirm an unauthenticated request to the
+   MCP URL returns `401 Unauthorized` with a `WWW-Authenticate` header whose
+   `resource_metadata` value is the function-scoped metadata URL above. The
+   authorization-server discovery response must be JSON and must not report
+   `feature_disabled`.
 
 No changes to the `tasks` table or its data are required.
 
@@ -80,4 +87,3 @@ This uses ChatGPT Developer Mode and a custom MCP app on ChatGPT web.
    > Add Test AI Task to Important Today.
 
 The app can be selected in an ordinary ChatGPT conversation. A ChatGPT Project may hold related instructions, but a Project does not automatically connect or activate the MCP app.
-
