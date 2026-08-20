@@ -13,6 +13,7 @@ const OAUTH_ISSUER = `${SUPABASE_URL}/auth/v1`
 const RESOURCE_METADATA_URL = `${MCP_URL}/.well-known/oauth-protected-resource`
 
 const SECTIONS = ['important_today', 'today', 'general'] as const
+const SECTION_RANK = Object.fromEntries(SECTIONS.map((section, index) => [section, index])) as Record<Section, number>
 const REQUIRED_PERMISSIONS = ['tasks:read', 'tasks:write', 'tasks:delete'] as const
 const oauthSecurity = [{ type: 'oauth2' as const, scopes: ['email'] }]
 
@@ -169,9 +170,16 @@ function makeServer(authorizationHeader: string | undefined) {
       const { data, error } = await query
       if (error) return toolError(`Could not list tasks: ${error.message}`)
 
+      const tasks = (data ?? []).toSorted((left, right) =>
+        (SECTION_RANK[left.section as Section] ?? SECTIONS.length) -
+          (SECTION_RANK[right.section as Section] ?? SECTIONS.length) ||
+        Number(left.sort_order ?? 0) - Number(right.sort_order ?? 0) ||
+        String(left.created_at).localeCompare(String(right.created_at))
+      )
+
       return {
-        content: [{ type: 'text', text: jsonText({ tasks: data ?? [] }) }],
-        structuredContent: { tasks: data ?? [] },
+        content: [{ type: 'text', text: jsonText({ tasks }) }],
+        structuredContent: { tasks },
       }
     },
   )
