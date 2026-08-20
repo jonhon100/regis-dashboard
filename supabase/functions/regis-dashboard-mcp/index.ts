@@ -11,11 +11,12 @@ const SUPABASE_PUBLIC_KEY = Deno.env.get('SUPABASE_PUBLISHABLE_KEY') ?? Deno.env
 const MCP_URL = `${SUPABASE_URL}/functions/v1/regis-dashboard-mcp`
 const OAUTH_ISSUER = `${SUPABASE_URL}/auth/v1`
 const RESOURCE_METADATA_URL = `${MCP_URL}/.well-known/oauth-protected-resource`
+const OAUTH_SCOPES = ['openid', 'email']
 
 const SECTIONS = ['important_today', 'today', 'general'] as const
 const SECTION_RANK = Object.fromEntries(SECTIONS.map((section, index) => [section, index])) as Record<Section, number>
 const REQUIRED_PERMISSIONS = ['tasks:read', 'tasks:write', 'tasks:delete'] as const
-const oauthSecurity = [{ type: 'oauth2' as const, scopes: ['email'] }]
+const oauthSecurity = [{ type: 'oauth2' as const, scopes: OAUTH_SCOPES }]
 
 type Section = typeof SECTIONS[number]
 type Permission = typeof REQUIRED_PERMISSIONS[number]
@@ -65,7 +66,7 @@ function authChallenge(description: string) {
     isError: true,
     _meta: {
       'mcp/www_authenticate': [
-        `Bearer resource_metadata="${RESOURCE_METADATA_URL}", error="invalid_token", error_description="${description.replaceAll('"', "'")}"`,
+        `Bearer resource_metadata="${RESOURCE_METADATA_URL}", scope="${OAUTH_SCOPES.join(' ')}", error="invalid_token", error_description="${description.replaceAll('"', "'")}"`,
       ],
     },
   }
@@ -356,12 +357,29 @@ app.get('/health', (context) => context.json({ ok: true, service: 'regis-dashboa
 app.get('/.well-known/oauth-protected-resource', (context) => context.json({
   resource: MCP_URL,
   authorization_servers: [OAUTH_ISSUER],
-  scopes_supported: ['email'],
+  scopes_supported: OAUTH_SCOPES,
   bearer_methods_supported: ['header'],
-}))
+}, 200, { 'Cache-Control': 'public, max-age=300' }))
 
 app.all('/', async (context) => {
-  const server = makeServer(context.req.header('Authorization'))
+  const authorizationHeader = context.req.header('Authorization')
+
+  // Supabase cannot route the RFC 9728 origin-level well-known path to an
+  // individual Edge Function. Advertise the function-scoped metadata URL in
+  // the standard HTTP challenge so MCP clients can discover it reliably.
+  if (!bearerToken(authorizationHeader)) {
+    return context.json(
+      { error: 'unauthorized', error_description: 'OAuth authorization is required.' },
+      401,
+      {
+        'Cache-Control': 'no-store',
+        'WWW-Authenticate': `Bearer resource_metadata="${RESOURCE_METADATA_URL}", scope="${OAUTH_SCOPES.join(' ')}"`,
+        'Access-Control-Expose-Headers': 'WWW-Authenticate',
+      },
+    )
+  }
+
+  const server = makeServer(authorizationHeader)
   const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined })
   await server.connect(transport)
   return transport.handleRequest(context.req.raw)
