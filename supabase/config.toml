@@ -1,0 +1,5 @@
+[functions.regis-dashboard-mcp]
+# MCP discovery and the OAuth challenge happen before a user token exists.
+# The function validates OAuth bearer tokens before every task operation.
+verify_jwt = false
+
