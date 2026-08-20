@@ -6,8 +6,13 @@
   <title>Regis Dashboard</title>
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.7/Sortable.min.js"></script>
 
   <style>
+    :root {
+      color-scheme: light;
+    }
+
     body {
       font-family: Arial, sans-serif;
       margin: 0;
@@ -34,6 +39,7 @@
     }
 
     input, textarea, select, button {
+      font: inherit;
       font-size: 16px;
       padding: 10px;
       margin: 5px 0;
@@ -44,35 +50,98 @@
       width: 100%;
     }
 
+    textarea {
+      resize: vertical;
+    }
+
     button {
       cursor: pointer;
+    }
+
+    .app-heading {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 15px;
+    }
+
+    .save-status {
+      min-height: 18px;
+      color: #666;
+      font-size: 13px;
+      font-weight: normal;
+    }
+
+    .task-list {
+      min-height: 34px;
+    }
+
+    .task-list:empty::after {
+      content: "No tasks";
+      display: block;
+      padding: 8px 0;
+      color: #aaa;
+      font-size: 14px;
     }
 
     .task {
       display: flex;
       align-items: flex-start;
-      gap: 10px;
-      padding: 10px 0;
+      gap: 9px;
+      padding: 9px 0;
       border-bottom: 1px solid #eee;
+      background: white;
     }
 
-    .task input[type="checkbox"] {
-      width: auto;
-      margin-top: 5px;
+    .task:last-child {
+      border-bottom: 0;
+    }
+
+    .drag-handle {
+      align-self: stretch;
+      display: flex;
+      align-items: center;
+      border: 0;
+      background: transparent;
+      color: #999;
+      padding: 0 4px;
+      margin: 0;
+      font-size: 22px;
+      line-height: 1;
+      cursor: grab;
+      touch-action: none;
+      user-select: none;
+    }
+
+    .drag-handle:active {
+      cursor: grabbing;
+    }
+
+    .task-checkbox {
+      width: 22px !important;
+      height: 22px;
+      margin: 2px 0 0;
+      flex: 0 0 auto;
+      cursor: pointer;
     }
 
     .task-content {
       flex: 1;
+      min-width: 0;
+      padding-top: 2px;
     }
 
     .task-title {
       font-size: 17px;
+      overflow-wrap: anywhere;
     }
 
     .task-notes {
       font-size: 14px;
       color: #666;
       margin-top: 4px;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
     }
 
     .completed .task-title {
@@ -80,10 +149,47 @@
       color: #999;
     }
 
+    .task-actions {
+      display: flex;
+      gap: 5px;
+      flex: 0 0 auto;
+    }
+
+    .task-actions button,
+    .edit-actions button {
+      font-size: 14px;
+      padding: 6px 8px;
+      margin: 0;
+    }
+
+    .task-editor {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .task-editor input,
+    .task-editor textarea {
+      margin: 0 0 7px;
+    }
+
+    .edit-actions {
+      display: flex;
+      gap: 6px;
+    }
+
     .section-title {
       margin-top: 10px;
       padding-bottom: 8px;
       border-bottom: 2px solid #ddd;
+    }
+
+    .sortable-ghost {
+      opacity: 0.35;
+      background: #e8f1ff;
+    }
+
+    .sortable-chosen {
+      box-shadow: 0 4px 12px rgba(0,0,0,0.12);
     }
 
     #app {
@@ -94,50 +200,56 @@
       color: #b00020;
       margin-top: 10px;
     }
+
+    @media (max-width: 600px) {
+      .container {
+        margin: 0 auto;
+        padding: 12px;
+      }
+
+      .card {
+        padding: 14px;
+        margin-bottom: 14px;
+      }
+
+      h1 {
+        font-size: 26px;
+      }
+
+      .task {
+        gap: 7px;
+      }
+
+      .task-actions {
+        flex-direction: column;
+      }
+    }
   </style>
 </head>
 
 <body>
   <div class="container">
-
     <div id="login" class="card">
       <h1>Regis Dashboard</h1>
 
-      <input
-        id="email"
-        type="email"
-        placeholder="Email address"
-      />
-
-      <input
-        id="password"
-        type="password"
-        placeholder="Password"
-      />
-
-      <button onclick="signIn()">Sign In</button>
+      <input id="email" type="email" placeholder="Email address" autocomplete="email" />
+      <input id="password" type="password" placeholder="Password" autocomplete="current-password" />
+      <button type="button" onclick="signIn()">Sign In</button>
 
       <div id="loginError" class="error"></div>
     </div>
 
-
     <div id="app">
-
-      <h1>Regis Dashboard</h1>
+      <div class="app-heading">
+        <h1>Regis Dashboard</h1>
+        <div id="saveStatus" class="save-status" aria-live="polite"></div>
+      </div>
 
       <div class="card">
         <h2>Add Task</h2>
 
-        <input
-          id="newTitle"
-          type="text"
-          placeholder="What needs doing?"
-        />
-
-        <textarea
-          id="newNotes"
-          placeholder="Notes (optional)"
-        ></textarea>
+        <input id="newTitle" type="text" placeholder="What needs doing?" />
+        <textarea id="newNotes" placeholder="Notes (optional)"></textarea>
 
         <select id="newSection">
           <option value="important_today">Important Today</option>
@@ -145,156 +257,204 @@
           <option value="general" selected>General</option>
         </select>
 
-        <button onclick="addTask()">Add Task</button>
+        <button type="button" onclick="addTask()">Add Task</button>
       </div>
-
 
       <div class="card">
         <h2 class="section-title">Important Today</h2>
-        <div id="important_today"></div>
+        <div id="important_today" class="task-list" data-section="important_today"></div>
       </div>
 
       <div class="card">
         <h2 class="section-title">Today</h2>
-        <div id="today"></div>
+        <div id="today" class="task-list" data-section="today"></div>
       </div>
 
       <div class="card">
         <h2 class="section-title">General</h2>
-        <div id="general"></div>
+        <div id="general" class="task-list" data-section="general"></div>
       </div>
 
-      <button onclick="signOut()">Sign Out</button>
-
+      <button type="button" onclick="signOut()">Sign Out</button>
     </div>
-
   </div>
-
 
   <script>
     const SUPABASE_URL = "https://wpxfslsluveavxmfoboa.supabase.co";
     const SUPABASE_KEY = "sb_publishable_jPPEJjRJi5iNXATtffTQ9g_ZV_GF8gX";
+    const SECTION_IDS = ["important_today", "today", "general"];
 
-    const client = supabase.createClient(
-      SUPABASE_URL,
-      SUPABASE_KEY
-    );
+    const client = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
+    let sortablesReady = false;
+    let orderSaveQueue = Promise.resolve();
+    let latestOrderSave = 0;
 
     async function signIn() {
       const email = document.getElementById("email").value;
       const password = document.getElementById("password").value;
 
-      const { error } = await client.auth.signInWithPassword({
-        email,
-        password
-      });
+      const { error } = await client.auth.signInWithPassword({ email, password });
 
       if (error) {
-        document.getElementById("loginError").textContent =
-          error.message;
+        document.getElementById("loginError").textContent = error.message;
         return;
       }
 
       showApp();
     }
 
-
     async function signOut() {
       await client.auth.signOut();
       location.reload();
     }
 
-
     async function showApp() {
       document.getElementById("login").style.display = "none";
       document.getElementById("app").style.display = "block";
 
+      initialiseSorting();
       await loadTasks();
     }
-
 
     async function loadTasks() {
       const { data, error } = await client
         .from("tasks")
         .select("*")
-        .order("sort_order", { ascending: true });
+        .order("sort_order", { ascending: true })
+        .order("created_at", { ascending: true });
 
       if (error) {
         console.error(error);
+        alert("Tasks could not be loaded. " + error.message);
         return;
       }
 
-      document.getElementById("important_today").innerHTML = "";
-      document.getElementById("today").innerHTML = "";
-      document.getElementById("general").innerHTML = "";
+      SECTION_IDS.forEach(section => {
+        document.getElementById(section).replaceChildren();
+      });
 
       data.forEach(renderTask);
     }
 
-
     function renderTask(task) {
-      const container =
-        document.getElementById(task.section || "general");
-
+      const section = SECTION_IDS.includes(task.section) ? task.section : "general";
+      const container = document.getElementById(section);
       const row = document.createElement("div");
 
-      row.className =
-        "task" + (task.completed ? " completed" : "");
+      row.className = "task" + (task.completed ? " completed" : "");
+      row.dataset.id = task.id;
 
-      row.innerHTML = `
-        <input
-          type="checkbox"
-          ${task.completed ? "checked" : ""}
-          onchange="toggleTask(${task.id}, this.checked)"
-        />
+      const handle = document.createElement("button");
+      handle.type = "button";
+      handle.className = "drag-handle";
+      handle.textContent = "⋮⋮";
+      handle.title = "Drag to reorder or move section";
+      handle.setAttribute("aria-label", "Drag task to reorder or move section");
 
-        <div class="task-content">
-          <div class="task-title">
-            ${escapeHtml(task.title || "")}
-          </div>
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.className = "task-checkbox";
+      checkbox.checked = Boolean(task.completed);
+      checkbox.setAttribute("aria-label", "Mark task complete");
+      checkbox.addEventListener("change", () => toggleTask(task.id, checkbox.checked));
 
-          ${
-            task.notes
-              ? `<div class="task-notes">
-                   ${escapeHtml(task.notes)}
-                 </div>`
-              : ""
-          }
-        </div>
+      const content = document.createElement("div");
+      content.className = "task-content";
 
-        <button onclick="deleteTask(${task.id})">
-          Delete
-        </button>
-      `;
+      const title = document.createElement("div");
+      title.className = "task-title";
+      title.textContent = task.title || "";
+      content.appendChild(title);
 
+      if (task.notes) {
+        const notes = document.createElement("div");
+        notes.className = "task-notes";
+        notes.textContent = task.notes;
+        content.appendChild(notes);
+      }
+
+      const actions = document.createElement("div");
+      actions.className = "task-actions";
+
+      const editButton = document.createElement("button");
+      editButton.type = "button";
+      editButton.textContent = "Edit";
+      editButton.addEventListener("click", () => showTaskEditor(row, task));
+
+      const deleteButton = document.createElement("button");
+      deleteButton.type = "button";
+      deleteButton.textContent = "Delete";
+      deleteButton.addEventListener("click", () => deleteTask(task.id));
+
+      actions.append(editButton, deleteButton);
+      row.append(handle, checkbox, content, actions);
       container.appendChild(row);
     }
 
+    function showTaskEditor(row, task) {
+      const editor = document.createElement("div");
+      editor.className = "task-editor";
+
+      const titleInput = document.createElement("input");
+      titleInput.type = "text";
+      titleInput.value = task.title || "";
+      titleInput.setAttribute("aria-label", "Task title");
+
+      const notesInput = document.createElement("textarea");
+      notesInput.value = task.notes || "";
+      notesInput.placeholder = "Notes (optional)";
+      notesInput.setAttribute("aria-label", "Task notes");
+
+      const editActions = document.createElement("div");
+      editActions.className = "edit-actions";
+
+      const saveButton = document.createElement("button");
+      saveButton.type = "button";
+      saveButton.textContent = "Save";
+      saveButton.addEventListener("click", () => {
+        updateTask(task.id, titleInput.value, notesInput.value);
+      });
+
+      const cancelButton = document.createElement("button");
+      cancelButton.type = "button";
+      cancelButton.textContent = "Cancel";
+      cancelButton.addEventListener("click", loadTasks);
+
+      editActions.append(saveButton, cancelButton);
+      editor.append(titleInput, notesInput, editActions);
+      row.replaceChildren(editor);
+      titleInput.focus();
+      titleInput.select();
+    }
 
     async function addTask() {
-      const title =
-        document.getElementById("newTitle").value.trim();
+      const titleInput = document.getElementById("newTitle");
+      const notesInput = document.getElementById("newNotes");
+      const title = titleInput.value.trim();
+      const notes = notesInput.value.trim();
+      const section = document.getElementById("newSection").value;
 
-      const notes =
-        document.getElementById("newNotes").value.trim();
+      if (!title) {
+        titleInput.focus();
+        return;
+      }
 
-      const section =
-        document.getElementById("newSection").value;
-
-      if (!title) return;
-
-      const { data: existing } = await client
+      const { data: existing, error: orderError } = await client
         .from("tasks")
         .select("sort_order")
         .eq("section", section)
         .order("sort_order", { ascending: false })
         .limit(1);
 
-      const nextOrder =
-        existing && existing.length
-          ? (existing[0].sort_order || 0) + 1
-          : 1;
+      if (orderError) {
+        alert(orderError.message);
+        return;
+      }
+
+      const nextOrder = existing && existing.length
+        ? Number(existing[0].sort_order || 0) + 1
+        : 1;
 
       const { error } = await client
         .from("tasks")
@@ -311,17 +471,24 @@
         return;
       }
 
-      document.getElementById("newTitle").value = "";
-      document.getElementById("newNotes").value = "";
-
+      titleInput.value = "";
+      notesInput.value = "";
+      titleInput.focus();
       await loadTasks();
     }
 
+    async function updateTask(id, titleValue, notesValue) {
+      const title = titleValue.trim();
+      const notes = notesValue.trim();
 
-    async function toggleTask(id, completed) {
+      if (!title) {
+        alert("A task needs a title.");
+        return;
+      }
+
       const { error } = await client
         .from("tasks")
-        .update({ completed })
+        .update({ title, notes: notes || null })
         .eq("id", id);
 
       if (error) {
@@ -332,6 +499,20 @@
       await loadTasks();
     }
 
+    async function toggleTask(id, completed) {
+      const { error } = await client
+        .from("tasks")
+        .update({ completed })
+        .eq("id", id);
+
+      if (error) {
+        alert(error.message);
+        await loadTasks();
+        return;
+      }
+
+      await loadTasks();
+    }
 
     async function deleteTask(id) {
       const { error } = await client
@@ -347,26 +528,103 @@
       await loadTasks();
     }
 
+    function initialiseSorting() {
+      if (sortablesReady) return;
 
-    function escapeHtml(value) {
-      const div = document.createElement("div");
-      div.textContent = value;
-      return div.innerHTML;
+      SECTION_IDS.forEach(section => {
+        Sortable.create(document.getElementById(section), {
+          group: "regis-tasks",
+          draggable: ".task",
+          handle: ".drag-handle",
+          animation: 150,
+          ghostClass: "sortable-ghost",
+          chosenClass: "sortable-chosen",
+          delay: 100,
+          delayOnTouchOnly: true,
+          touchStartThreshold: 5,
+          fallbackTolerance: 4,
+          emptyInsertThreshold: 24,
+          onEnd: queueOrderSave
+        });
+      });
+
+      sortablesReady = true;
     }
 
+    function getOrderSnapshot() {
+      const changes = [];
+
+      SECTION_IDS.forEach(section => {
+        const rows = document.getElementById(section).querySelectorAll(".task");
+
+        rows.forEach((row, index) => {
+          changes.push({
+            id: Number(row.dataset.id),
+            section,
+            sort_order: index + 1
+          });
+        });
+      });
+
+      return changes;
+    }
+
+    function queueOrderSave() {
+      const snapshot = getOrderSnapshot();
+      const saveNumber = ++latestOrderSave;
+      setSaveStatus("Saving…");
+
+      orderSaveQueue = orderSaveQueue.then(async () => {
+        const results = await Promise.all(
+          snapshot.map(change =>
+            client
+              .from("tasks")
+              .update({
+                section: change.section,
+                sort_order: change.sort_order
+              })
+              .eq("id", change.id)
+          )
+        );
+
+        const failed = results.find(result => result.error);
+        if (failed) throw failed.error;
+
+        if (saveNumber === latestOrderSave) {
+          setSaveStatus("Saved");
+          window.setTimeout(() => {
+            if (saveNumber === latestOrderSave) setSaveStatus("");
+          }, 1200);
+        }
+      }).catch(async error => {
+        console.error(error);
+        setSaveStatus("Save failed");
+        alert("The new task order could not be saved. " + error.message);
+        await loadTasks();
+      });
+    }
+
+    function setSaveStatus(message) {
+      document.getElementById("saveStatus").textContent = message;
+    }
 
     async function checkSession() {
-      const {
-        data: { session }
-      } = await client.auth.getSession();
+      const { data: { session } } = await client.auth.getSession();
 
       if (session) {
         showApp();
       }
     }
 
+    document.getElementById("password").addEventListener("keydown", event => {
+      if (event.key === "Enter") signIn();
+    });
+
+    document.getElementById("newTitle").addEventListener("keydown", event => {
+      if (event.key === "Enter") addTask();
+    });
+
     checkSession();
   </script>
-
 </body>
 </html>
