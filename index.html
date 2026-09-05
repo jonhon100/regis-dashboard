@@ -201,6 +201,43 @@
       margin-top: 10px;
     }
 
+    .assistant-output {
+      min-height: 70px;
+      max-height: 280px;
+      overflow-y: auto;
+      margin: 10px 0;
+      padding: 12px;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      background: #fafafa;
+    }
+
+    .assistant-output:empty::after {
+      content: "Ask about your tasks or add a new one.";
+      color: #888;
+    }
+
+    .assistant-message {
+      margin-bottom: 10px;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+
+    .assistant-message:last-child {
+      margin-bottom: 0;
+    }
+
+    .assistant-message strong {
+      display: block;
+      margin-bottom: 3px;
+    }
+
+    .assistant-status {
+      min-height: 20px;
+      color: #666;
+      font-size: 14px;
+    }
+
     @media (max-width: 600px) {
       .container {
         margin: 0 auto;
@@ -258,6 +295,15 @@
         </select>
 
         <button type="button" onclick="addTask()">Add Task</button>
+      </div>
+
+      <div class="card">
+        <h2>Assistant</h2>
+        <div id="assistantOutput" class="assistant-output" aria-live="polite"></div>
+        <textarea id="assistantInput" rows="3" placeholder="Ask about your tasks or add a new task"></textarea>
+        <button id="assistantSend" type="button" onclick="sendAssistantMessage()">Send</button>
+        <div id="assistantStatus" class="assistant-status" aria-live="polite"></div>
+        <div id="assistantError" class="error" role="alert"></div>
       </div>
 
       <div class="card">
@@ -528,6 +574,71 @@
       await loadTasks();
     }
 
+    function addAssistantMessage(label, text) {
+      const output = document.getElementById("assistantOutput");
+      const message = document.createElement("div");
+      const heading = document.createElement("strong");
+      const body = document.createElement("span");
+
+      message.className = "assistant-message";
+      heading.textContent = label;
+      body.textContent = text;
+      message.append(heading, body);
+      output.appendChild(message);
+      output.scrollTop = output.scrollHeight;
+    }
+
+    async function sendAssistantMessage() {
+      const input = document.getElementById("assistantInput");
+      const sendButton = document.getElementById("assistantSend");
+      const status = document.getElementById("assistantStatus");
+      const errorDisplay = document.getElementById("assistantError");
+      const message = input.value.trim();
+
+      if (!message) {
+        input.focus();
+        return;
+      }
+
+      const { data: { session } } = await client.auth.getSession();
+      if (!session?.access_token) {
+        errorDisplay.textContent = "Your sign-in has expired. Please sign in again.";
+        return;
+      }
+
+      addAssistantMessage("You", message);
+      input.value = "";
+      input.disabled = true;
+      sendButton.disabled = true;
+      status.textContent = "Thinking…";
+      errorDisplay.textContent = "";
+
+      try {
+        const response = await fetch(`${SUPABASE_URL}/functions/v1/regis-assistant`, {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${session.access_token}`,
+            "apikey": SUPABASE_KEY,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({ message })
+        });
+
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(result.error || `Assistant request failed (${response.status}).`);
+
+        addAssistantMessage("Assistant", result.reply || "No response received.");
+        if (result.task_changed || result.task_created) await loadTasks();
+      } catch (error) {
+        errorDisplay.textContent = error.message || "The assistant request failed.";
+      } finally {
+        input.disabled = false;
+        sendButton.disabled = false;
+        status.textContent = "";
+        input.focus();
+      }
+    }
+
     function initialiseSorting() {
       if (sortablesReady) return;
 
@@ -622,6 +733,13 @@
 
     document.getElementById("newTitle").addEventListener("keydown", event => {
       if (event.key === "Enter") addTask();
+    });
+
+    document.getElementById("assistantInput").addEventListener("keydown", event => {
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        sendAssistantMessage();
+      }
     });
 
     checkSession();

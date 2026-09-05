@@ -136,7 +136,7 @@ async function nextSortOrder(db: SupabaseClient, section: Section) {
     .maybeSingle()
 
   if (error) throw error
-  return Number(data?.sort_order ?? -1) + 1
+  return Number(data?.sort_order ?? 0) + 1
 }
 
 function makeServer(authorizationHeader: string | undefined) {

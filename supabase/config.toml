@@ -3,3 +3,5 @@
 # The function validates OAuth bearer tokens before every task operation.
 verify_jwt = false
 
+[functions.regis-assistant]
+verify_jwt = true
