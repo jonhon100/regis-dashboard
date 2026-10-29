@@ -10,6 +10,7 @@ const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
 const SUPABASE_PUBLIC_KEY = Deno.env.get('SUPABASE_PUBLISHABLE_KEY') ?? Deno.env.get('SUPABASE_ANON_KEY') ?? ''
 const MCP_URL = `${SUPABASE_URL}/functions/v1/regis-hub-mcp-dev`
 const OAUTH_ISSUER = `${SUPABASE_URL}/auth/v1`
+const OAUTH_CLIENT_ID = '96f5cfdb-50a1-458e-a350-ca1984905b31'
 const RESOURCE_METADATA_URL = `${MCP_URL}/.well-known/oauth-protected-resource`
 const OAUTH_SCOPES = ['openid', 'email']
 
@@ -110,18 +111,16 @@ async function authorize(
     return { error: authChallenge('The Regis Dashboard access token could not be read.') }
   }
 
-  const resources = Array.isArray(claims.resource) ? claims.resource : [claims.resource]
   const now = Math.floor(Date.now() / 1000)
 
   if (
     claims.iss !== OAUTH_ISSUER ||
     claims.sub !== user.id ||
-    !claims.client_id ||
+    claims.client_id !== OAUTH_CLIENT_ID ||
     !claims.exp ||
-    claims.exp <= now ||
-    !resources.includes(MCP_URL)
+    claims.exp <= now
   ) {
-    return { error: authChallenge('This token was not issued for the Regis Dashboard MCP app or lacks permission.') }
+    return { error: authChallenge('This token was not issued for the REGIS HUB development OAuth app or has expired.') }
   }
 
   const db = createClient(SUPABASE_URL, SUPABASE_PUBLIC_KEY, {
