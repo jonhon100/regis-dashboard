@@ -15,11 +15,9 @@ const OAUTH_SCOPES = ['openid', 'email']
 
 const SECTIONS = ['important_today', 'today', 'general'] as const
 const SECTION_RANK = Object.fromEntries(SECTIONS.map((section, index) => [section, index])) as Record<Section, number>
-const REQUIRED_PERMISSIONS = ['tasks:read', 'tasks:write', 'tasks:delete'] as const
 const oauthSecurity = [{ type: 'oauth2' as const, scopes: OAUTH_SCOPES }]
 
 type Section = typeof SECTIONS[number]
-type Permission = typeof REQUIRED_PERMISSIONS[number]
 type Task = {
   id: number | string
   created_at: string
@@ -47,7 +45,6 @@ type JwtClaims = {
   exp?: number
   client_id?: string
   resource?: string | string[]
-  regis_dashboard_permissions?: string[]
 }
 
 function jsonText(value: unknown) {
@@ -92,7 +89,6 @@ function toolError(message: string) {
 
 async function authorize(
   authorizationHeader: string | undefined,
-  permission: Permission,
 ): Promise<{ db: SupabaseClient; userId: string } | { error: ReturnType<typeof authChallenge> }> {
   const token = bearerToken(authorizationHeader)
   if (!token) return { error: authChallenge('Sign in to Regis Dashboard to use this tool.') }
@@ -115,7 +111,6 @@ async function authorize(
   }
 
   const resources = Array.isArray(claims.resource) ? claims.resource : [claims.resource]
-  const permissions = claims.regis_dashboard_permissions ?? []
   const now = Math.floor(Date.now() / 1000)
 
   if (
@@ -124,8 +119,7 @@ async function authorize(
     !claims.client_id ||
     !claims.exp ||
     claims.exp <= now ||
-    !resources.includes(MCP_URL) ||
-    !permissions.includes(permission)
+    !resources.includes(MCP_URL)
   ) {
     return { error: authChallenge('This token was not issued for the Regis Dashboard MCP app or lacks permission.') }
   }
@@ -214,7 +208,7 @@ function makeServer(authorizationHeader: string | undefined) {
       _meta: { securitySchemes: oauthSecurity },
     },
     async () => {
-      const auth = await authorize(authorizationHeader, 'tasks:read')
+      const auth = await authorize(authorizationHeader)
       if ('error' in auth) return auth.error
       const { data, error } = await auth.db.from('outline_documents')
         .select('id,title,document_type,sort_order').order('sort_order').order('title')
@@ -239,7 +233,7 @@ function makeServer(authorizationHeader: string | undefined) {
       _meta: { securitySchemes: oauthSecurity },
     },
     async ({ document_id, document_title, include_completed }) => {
-      const auth = await authorize(authorizationHeader, 'tasks:read')
+      const auth = await authorize(authorizationHeader)
       if ('error' in auth) return auth.error
       try {
         const document = await findDocument(auth.db, document_id, document_title)
@@ -274,7 +268,7 @@ function makeServer(authorizationHeader: string | undefined) {
       _meta: { securitySchemes: oauthSecurity },
     },
     async ({ document_id, title, notes, parent_id, section, item_kind }) => {
-      const auth = await authorize(authorizationHeader, 'tasks:write')
+      const auth = await authorize(authorizationHeader)
       if ('error' in auth) return auth.error
       try {
         const document = await findDocument(auth.db, document_id)
@@ -314,7 +308,7 @@ function makeServer(authorizationHeader: string | undefined) {
       _meta: { securitySchemes: oauthSecurity },
     },
     async ({ task_id, document_id, parent_id, section }) => {
-      const auth = await authorize(authorizationHeader, 'tasks:write')
+      const auth = await authorize(authorizationHeader)
       if ('error' in auth) return auth.error
       try {
         const document = await findDocument(auth.db, document_id)
@@ -353,7 +347,7 @@ function makeServer(authorizationHeader: string | undefined) {
       _meta: { securitySchemes: oauthSecurity },
     },
     async ({ section, include_completed }) => {
-      const auth = await authorize(authorizationHeader, 'tasks:read')
+      const auth = await authorize(authorizationHeader)
       if ('error' in auth) return auth.error
 
       let todo: OutlineDocument
@@ -401,7 +395,7 @@ function makeServer(authorizationHeader: string | undefined) {
       _meta: { securitySchemes: oauthSecurity },
     },
     async ({ task_id }) => {
-      const auth = await authorize(authorizationHeader, 'tasks:read')
+      const auth = await authorize(authorizationHeader)
       if ('error' in auth) return auth.error
 
       let todo: OutlineDocument
@@ -441,7 +435,7 @@ function makeServer(authorizationHeader: string | undefined) {
       _meta: { securitySchemes: oauthSecurity },
     },
     async ({ title, notes, section }) => {
-      const auth = await authorize(authorizationHeader, 'tasks:write')
+      const auth = await authorize(authorizationHeader)
       if ('error' in auth) return auth.error
 
       try {
@@ -482,7 +476,7 @@ function makeServer(authorizationHeader: string | undefined) {
       _meta: { securitySchemes: oauthSecurity },
     },
     async ({ task_id, title, notes, section, sort_order, completed }) => {
-      const auth = await authorize(authorizationHeader, 'tasks:write')
+      const auth = await authorize(authorizationHeader)
       if ('error' in auth) return auth.error
 
       let todo: OutlineDocument
@@ -547,7 +541,7 @@ function makeServer(authorizationHeader: string | undefined) {
       _meta: { securitySchemes: oauthSecurity },
     },
     async ({ task_id, confirm_title }) => {
-      const auth = await authorize(authorizationHeader, 'tasks:delete')
+      const auth = await authorize(authorizationHeader)
       if ('error' in auth) return auth.error
 
       let todo: OutlineDocument
