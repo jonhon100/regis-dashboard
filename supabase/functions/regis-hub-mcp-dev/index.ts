@@ -1,0 +1,676 @@
+import 'jsr:@supabase/functions-js/edge-runtime.d.ts'
+
+import { McpServer } from 'npm:@modelcontextprotocol/sdk@1.25.3/server/mcp.js'
+import { WebStandardStreamableHTTPServerTransport } from 'npm:@modelcontextprotocol/sdk@1.25.3/server/webStandardStreamableHttp.js'
+import { createClient, type SupabaseClient } from 'npm:@supabase/supabase-js@2'
+import { Hono } from 'npm:hono@4.9.7'
+import { z } from 'npm:zod@4.1.13'
+
+const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
+const SUPABASE_PUBLIC_KEY = Deno.env.get('SUPABASE_PUBLISHABLE_KEY') ?? Deno.env.get('SUPABASE_ANON_KEY') ?? ''
+const MCP_URL = `${SUPABASE_URL}/functions/v1/regis-hub-mcp-dev`
+const OAUTH_ISSUER = `${SUPABASE_URL}/auth/v1`
+const RESOURCE_METADATA_URL = `${MCP_URL}/.well-known/oauth-protected-resource`
+const OAUTH_SCOPES = ['openid', 'email']
+
+const SECTIONS = ['important_today', 'today', 'general'] as const
+const SECTION_RANK = Object.fromEntries(SECTIONS.map((section, index) => [section, index])) as Record<Section, number>
+const REQUIRED_PERMISSIONS = ['tasks:read', 'tasks:write', 'tasks:delete'] as const
+const oauthSecurity = [{ type: 'oauth2' as const, scopes: OAUTH_SCOPES }]
+
+type Section = typeof SECTIONS[number]
+type Permission = typeof REQUIRED_PERMISSIONS[number]
+type Task = {
+  id: number | string
+  created_at: string
+  title: string
+  notes: string | null
+  section: Section
+  completed: boolean
+  sort_order: number
+  document_id: string
+  parent_id: number | string | null
+  item_kind: 'task' | 'note' | 'heading' | 'vessel'
+  is_collapsed: boolean
+}
+
+type OutlineDocument = {
+  id: string
+  title: string
+  document_type: 'todo' | 'service_orders' | 'outline'
+  sort_order: number
+}
+
+type JwtClaims = {
+  iss?: string
+  sub?: string
+  exp?: number
+  client_id?: string
+  resource?: string | string[]
+  regis_dashboard_permissions?: string[]
+}
+
+function jsonText(value: unknown) {
+  return JSON.stringify(value, (_key, item) => {
+    if (typeof item === 'bigint') return item.toString()
+    return item
+  }, 2)
+}
+
+function decodeJwtPayload(token: string): JwtClaims {
+  const encoded = token.split('.')[1]
+  if (!encoded) throw new Error('Malformed access token')
+
+  const base64 = encoded.replace(/-/g, '+').replace(/_/g, '/')
+  const padded = base64.padEnd(Math.ceil(base64.length / 4) * 4, '=')
+  return JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(padded), (character) => character.charCodeAt(0))))
+}
+
+function bearerToken(header: string | undefined) {
+  const match = header?.match(/^Bearer\s+(.+)$/i)
+  return match?.[1]
+}
+
+function authChallenge(description: string) {
+  return {
+    content: [{ type: 'text' as const, text: description }],
+    isError: true,
+    _meta: {
+      'mcp/www_authenticate': [
+        `Bearer resource_metadata="${RESOURCE_METADATA_URL}", scope="${OAUTH_SCOPES.join(' ')}", error="invalid_token", error_description="${description.replaceAll('"', "'")}"`,
+      ],
+    },
+  }
+}
+
+function toolError(message: string) {
+  return {
+    content: [{ type: 'text' as const, text: message }],
+    isError: true,
+  }
+}
+
+async function authorize(
+  authorizationHeader: string | undefined,
+  permission: Permission,
+): Promise<{ db: SupabaseClient; userId: string } | { error: ReturnType<typeof authChallenge> }> {
+  const token = bearerToken(authorizationHeader)
+  if (!token) return { error: authChallenge('Sign in to Regis Dashboard to use this tool.') }
+
+  if (!SUPABASE_URL || !SUPABASE_PUBLIC_KEY) {
+    return { error: authChallenge('The Regis Dashboard server is not configured correctly.') }
+  }
+
+  const authClient = createClient(SUPABASE_URL, SUPABASE_PUBLIC_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  })
+  const { data: { user }, error } = await authClient.auth.getUser(token)
+  if (error || !user) return { error: authChallenge('Your Regis Dashboard authorization is invalid or expired.') }
+
+  let claims: JwtClaims
+  try {
+    claims = decodeJwtPayload(token)
+  } catch {
+    return { error: authChallenge('The Regis Dashboard access token could not be read.') }
+  }
+
+  const resources = Array.isArray(claims.resource) ? claims.resource : [claims.resource]
+  const permissions = claims.regis_dashboard_permissions ?? []
+  const now = Math.floor(Date.now() / 1000)
+
+  if (
+    claims.iss !== OAUTH_ISSUER ||
+    claims.sub !== user.id ||
+    !claims.client_id ||
+    !claims.exp ||
+    claims.exp <= now ||
+    !resources.includes(MCP_URL) ||
+    !permissions.includes(permission)
+  ) {
+    return { error: authChallenge('This token was not issued for the Regis Dashboard MCP app or lacks permission.') }
+  }
+
+  const db = createClient(SUPABASE_URL, SUPABASE_PUBLIC_KEY, {
+    global: { headers: { Authorization: `Bearer ${token}` } },
+    auth: { persistSession: false, autoRefreshToken: false },
+  })
+  return { db, userId: user.id }
+}
+
+async function findDocument(db: SupabaseClient, documentId?: string, documentTitle?: string) {
+  let query = db.from('outline_documents').select('id,title,document_type,sort_order')
+  if (documentId) query = query.eq('id', documentId)
+  else if (documentTitle) query = query.ilike('title', documentTitle)
+  else query = query.eq('document_type', 'todo')
+  const { data, error } = await query.order('sort_order').limit(2)
+  if (error) throw error
+  if (!data?.length) throw new Error('No accessible document matched the request.')
+  if (data.length > 1) throw new Error('More than one document matched. Use an exact document ID.')
+  return data[0] as OutlineDocument
+}
+
+async function nextSortOrder(
+  db: SupabaseClient,
+  documentId: string,
+  section: string,
+  parentId: string | null = null,
+) {
+  let query = db
+    .from('tasks')
+    .select('sort_order')
+    .eq('document_id', documentId)
+    .eq('section', section)
+    .order('sort_order', { ascending: false })
+    .limit(1)
+  query = parentId === null ? query.is('parent_id', null) : query.eq('parent_id', parentId)
+  const { data, error } = await query.maybeSingle()
+
+  if (error) throw error
+  return Number(data?.sort_order ?? 0) + 1
+}
+
+function defaultSection(document: OutlineDocument) {
+  return document.document_type === 'todo' ? 'general'
+    : document.document_type === 'service_orders' ? 'service_orders'
+    : 'general'
+}
+
+function orderOutlineItems(rows: Task[]) {
+  const byParent = new Map<string, Task[]>()
+  for (const row of rows) {
+    const key = row.parent_id === null ? 'root' : String(row.parent_id)
+    const group = byParent.get(key) ?? []
+    group.push(row)
+    byParent.set(key, group)
+  }
+  for (const group of byParent.values()) group.sort((a, b) => Number(a.sort_order) - Number(b.sort_order) || Number(a.id) - Number(b.id))
+  const ordered: Array<Task & { depth: number }> = []
+  const seen = new Set<string>()
+  const walk = (parent: string, depth: number) => {
+    for (const row of byParent.get(parent) ?? []) {
+      const id = String(row.id)
+      if (seen.has(id)) continue
+      seen.add(id)
+      ordered.push({ ...row, depth })
+      walk(id, depth + 1)
+    }
+  }
+  walk('root', 0)
+  for (const row of rows) if (!seen.has(String(row.id))) ordered.push({ ...row, depth: 0 })
+  return ordered
+}
+
+function makeServer(authorizationHeader: string | undefined) {
+  const server = new McpServer({ name: 'REGIS HUB Development', version: '0.1.0' })
+
+  server.registerTool(
+    'list_documents',
+    {
+      title: 'List REGIS HUB documents',
+      description: 'List the signed-in user\'s REGIS HUB documents, including To Do and Service Orders.',
+      inputSchema: {},
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      securitySchemes: oauthSecurity,
+      _meta: { securitySchemes: oauthSecurity },
+    },
+    async () => {
+      const auth = await authorize(authorizationHeader, 'tasks:read')
+      if ('error' in auth) return auth.error
+      const { data, error } = await auth.db.from('outline_documents')
+        .select('id,title,document_type,sort_order').order('sort_order').order('title')
+      if (error) return toolError(`Could not list documents: ${error.message}`)
+      const documents = data ?? []
+      return { content: [{ type: 'text', text: jsonText({ documents }) }], structuredContent: { documents } }
+    },
+  )
+
+  server.registerTool(
+    'list_outline_items',
+    {
+      title: 'List a REGIS HUB outline',
+      description: 'Read one document as an ordered hierarchical outline. Use list_documents first when the document ID is unknown.',
+      inputSchema: {
+        document_id: z.string().uuid().optional(),
+        document_title: z.string().trim().min(1).max(200).optional(),
+        include_completed: z.boolean().default(false),
+      },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      securitySchemes: oauthSecurity,
+      _meta: { securitySchemes: oauthSecurity },
+    },
+    async ({ document_id, document_title, include_completed }) => {
+      const auth = await authorize(authorizationHeader, 'tasks:read')
+      if ('error' in auth) return auth.error
+      try {
+        const document = await findDocument(auth.db, document_id, document_title)
+        let query = auth.db.from('tasks').select('id,created_at,title,notes,section,completed,sort_order,document_id,parent_id,item_kind,is_collapsed')
+          .eq('document_id', document.id)
+        if (!include_completed) query = query.eq('completed', false)
+        const { data, error } = await query
+        if (error) return toolError(`Could not list outline items: ${error.message}`)
+        const items = orderOutlineItems((data ?? []) as Task[])
+        return { content: [{ type: 'text', text: jsonText({ document, items }) }], structuredContent: { document, items } }
+      } catch (error) {
+        return toolError(`Could not resolve document: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    },
+  )
+
+  server.registerTool(
+    'create_outline_item',
+    {
+      title: 'Create a REGIS HUB outline item',
+      description: 'Create a root or nested item in To Do, Service Orders, or another document. Use exact IDs returned by list_documents/list_outline_items.',
+      inputSchema: {
+        document_id: z.string().uuid(),
+        title: z.string().trim().min(1).max(500),
+        notes: z.string().max(10000).optional(),
+        parent_id: z.string().regex(/^\d+$/).nullable().default(null),
+        section: z.string().trim().min(1).max(100).optional(),
+        item_kind: z.enum(['task', 'note', 'heading', 'vessel']).default('task'),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+      securitySchemes: oauthSecurity,
+      _meta: { securitySchemes: oauthSecurity },
+    },
+    async ({ document_id, title, notes, parent_id, section, item_kind }) => {
+      const auth = await authorize(authorizationHeader, 'tasks:write')
+      if ('error' in auth) return auth.error
+      try {
+        const document = await findDocument(auth.db, document_id)
+        let actualSection = section ?? defaultSection(document)
+        if (parent_id) {
+          const { data: parent, error } = await auth.db.from('tasks').select('id,document_id,section').eq('id', parent_id).single()
+          if (error || !parent) return toolError('The requested parent item is not accessible.')
+          if (parent.document_id !== document.id) return toolError('Parent and child must belong to the same document.')
+          actualSection = parent.section
+        }
+        const sortOrder = await nextSortOrder(auth.db, document.id, actualSection, parent_id)
+        const { data, error } = await auth.db.from('tasks').insert({
+          document_id: document.id, parent_id, title, notes: notes ?? null, section: actualSection,
+          completed: false, sort_order: sortOrder, item_kind, is_collapsed: false,
+        }).select('id,created_at,title,notes,section,completed,sort_order,document_id,parent_id,item_kind,is_collapsed').single<Task>()
+        if (error) return toolError(`Could not create outline item: ${error.message}`)
+        return { content: [{ type: 'text', text: `Created “${data.title}” in ${document.title}.\n${jsonText({ item: data })}` }], structuredContent: { document, item: data } }
+      } catch (error) {
+        return toolError(`Could not create outline item: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    },
+  )
+
+  server.registerTool(
+    'move_outline_item',
+    {
+      title: 'Move or reparent a REGIS HUB outline item',
+      description: 'Move an item within its current document to the end of another parent or to the document root. The database prevents cycles.',
+      inputSchema: {
+        task_id: z.string().regex(/^\d+$/),
+        document_id: z.string().uuid(),
+        parent_id: z.string().regex(/^\d+$/).nullable(),
+        section: z.string().trim().min(1).max(100).optional(),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      securitySchemes: oauthSecurity,
+      _meta: { securitySchemes: oauthSecurity },
+    },
+    async ({ task_id, document_id, parent_id, section }) => {
+      const auth = await authorize(authorizationHeader, 'tasks:write')
+      if ('error' in auth) return auth.error
+      try {
+        const document = await findDocument(auth.db, document_id)
+        const { data: current, error: currentError } = await auth.db.from('tasks').select('id,document_id').eq('id', task_id).single()
+        if (currentError || !current) return toolError('The requested outline item is not accessible.')
+        if (current.document_id !== document.id) return toolError('Moving items between documents is not supported in this development version.')
+        let actualSection = section ?? defaultSection(document)
+        if (parent_id) {
+          const { data: parent, error } = await auth.db.from('tasks').select('id,document_id,section').eq('id', parent_id).single()
+          if (error || !parent) return toolError('The requested parent item is not accessible.')
+          if (parent.document_id !== document.id) return toolError('Parent and item must belong to the same document.')
+          actualSection = parent.section
+        }
+        const sortOrder = await nextSortOrder(auth.db, document.id, actualSection, parent_id)
+        const { data, error } = await auth.db.from('tasks').update({ document_id: document.id, parent_id, section: actualSection, sort_order: sortOrder })
+          .eq('id', task_id).select('id,created_at,title,notes,section,completed,sort_order,document_id,parent_id,item_kind,is_collapsed').single<Task>()
+        if (error) return toolError(`Could not move outline item: ${error.message}`)
+        return { content: [{ type: 'text', text: `Moved “${data.title}” in ${document.title}.\n${jsonText({ item: data })}` }], structuredContent: { document, item: data } }
+      } catch (error) {
+        return toolError(`Could not move outline item: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    },
+  )
+
+  server.registerTool(
+    'list_tasks',
+    {
+      title: 'List Regis Dashboard tasks',
+      description: 'List tasks in their saved order. By default returns active tasks; optionally filter by section or include completed tasks.',
+      inputSchema: {
+        section: z.enum(SECTIONS).optional().describe('Optional task section'),
+        include_completed: z.boolean().default(false).describe('Whether completed tasks should be included'),
+      },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      securitySchemes: oauthSecurity,
+      _meta: { securitySchemes: oauthSecurity },
+    },
+    async ({ section, include_completed }) => {
+      const auth = await authorize(authorizationHeader, 'tasks:read')
+      if ('error' in auth) return auth.error
+
+      let todo: OutlineDocument
+      try { todo = await findDocument(auth.db) } catch (error) {
+        return toolError(`Could not resolve To Do: ${error instanceof Error ? error.message : String(error)}`)
+      }
+
+      let query = auth.db
+        .from('tasks')
+        .select('id,created_at,title,notes,section,completed,sort_order')
+        .eq('document_id', todo.id)
+        .is('parent_id', null)
+        .order('section')
+        .order('sort_order')
+        .order('created_at')
+
+      if (section) query = query.eq('section', section)
+      if (!include_completed) query = query.eq('completed', false)
+
+      const { data, error } = await query
+      if (error) return toolError(`Could not list tasks: ${error.message}`)
+
+      const tasks = (data ?? []).toSorted((left, right) =>
+        (SECTION_RANK[left.section as Section] ?? SECTIONS.length) -
+          (SECTION_RANK[right.section as Section] ?? SECTIONS.length) ||
+        Number(left.sort_order ?? 0) - Number(right.sort_order ?? 0) ||
+        String(left.created_at).localeCompare(String(right.created_at))
+      )
+
+      return {
+        content: [{ type: 'text', text: jsonText({ tasks }) }],
+        structuredContent: { tasks },
+      }
+    },
+  )
+
+  server.registerTool(
+    'get_task',
+    {
+      title: 'Read a Regis Dashboard task',
+      description: 'Read one task, including its notes, by its exact task ID.',
+      inputSchema: { task_id: z.string().regex(/^\d+$/).describe('Exact task ID returned by list_tasks') },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      securitySchemes: oauthSecurity,
+      _meta: { securitySchemes: oauthSecurity },
+    },
+    async ({ task_id }) => {
+      const auth = await authorize(authorizationHeader, 'tasks:read')
+      if ('error' in auth) return auth.error
+
+      let todo: OutlineDocument
+      try { todo = await findDocument(auth.db) } catch (error) {
+        return toolError(`Could not resolve To Do: ${error instanceof Error ? error.message : String(error)}`)
+      }
+
+      const { data, error } = await auth.db
+        .from('tasks')
+        .select('id,created_at,title,notes,section,completed,sort_order')
+        .eq('id', task_id)
+        .eq('document_id', todo.id)
+        .maybeSingle<Task>()
+
+      if (error) return toolError(`Could not read task: ${error.message}`)
+      if (!data) return toolError(`No accessible task exists with ID ${task_id}.`)
+
+      return {
+        content: [{ type: 'text', text: jsonText({ task: data }) }],
+        structuredContent: { task: data },
+      }
+    },
+  )
+
+  server.registerTool(
+    'create_task',
+    {
+      title: 'Create a Regis Dashboard task',
+      description: 'Create a task at the end of a section. Natural-language interpretation belongs in ChatGPT; pass a clean title, optional notes, and exact section.',
+      inputSchema: {
+        title: z.string().trim().min(1).max(500),
+        notes: z.string().max(10000).optional(),
+        section: z.enum(SECTIONS),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+      securitySchemes: oauthSecurity,
+      _meta: { securitySchemes: oauthSecurity },
+    },
+    async ({ title, notes, section }) => {
+      const auth = await authorize(authorizationHeader, 'tasks:write')
+      if ('error' in auth) return auth.error
+
+      try {
+        const todo = await findDocument(auth.db)
+        const sortOrder = await nextSortOrder(auth.db, todo.id, section)
+        const { data, error } = await auth.db
+          .from('tasks')
+          .insert({ title, notes: notes ?? null, section, completed: false, sort_order: sortOrder })
+          .select('id,created_at,title,notes,section,completed,sort_order')
+          .single<Task>()
+
+        if (error) return toolError(`Could not create task: ${error.message}`)
+        return {
+          content: [{ type: 'text', text: `Created task “${data.title}” in ${data.section}.\n${jsonText({ task: data })}` }],
+          structuredContent: { task: data },
+        }
+      } catch (error) {
+        return toolError(`Could not determine task order: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    },
+  )
+
+  server.registerTool(
+    'update_task',
+    {
+      title: 'Update a Regis Dashboard task',
+      description: 'Change a task title, notes, section, sort order, or completion state. Resolve the task with list_tasks first; do not guess an ID.',
+      inputSchema: {
+        task_id: z.string().regex(/^\d+$/).describe('Exact task ID returned by list_tasks'),
+        title: z.string().trim().min(1).max(500).optional(),
+        notes: z.string().max(10000).nullable().optional().describe('Use null to clear notes'),
+        section: z.enum(SECTIONS).optional(),
+        sort_order: z.number().int().nonnegative().optional(),
+        completed: z.boolean().optional(),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      securitySchemes: oauthSecurity,
+      _meta: { securitySchemes: oauthSecurity },
+    },
+    async ({ task_id, title, notes, section, sort_order, completed }) => {
+      const auth = await authorize(authorizationHeader, 'tasks:write')
+      if ('error' in auth) return auth.error
+
+      let todo: OutlineDocument
+      try { todo = await findDocument(auth.db) } catch (error) {
+        return toolError(`Could not resolve To Do: ${error instanceof Error ? error.message : String(error)}`)
+      }
+
+      const { data: current, error: readError } = await auth.db
+        .from('tasks')
+        .select('id,created_at,title,notes,section,completed,sort_order')
+        .eq('id', task_id)
+        .eq('document_id', todo.id)
+        .maybeSingle<Task>()
+
+      if (readError) return toolError(`Could not read task before update: ${readError.message}`)
+      if (!current) return toolError(`No accessible task exists with ID ${task_id}.`)
+
+      const changes: Record<string, unknown> = {}
+      if (title !== undefined) changes.title = title
+      if (notes !== undefined) changes.notes = notes
+      if (section !== undefined) changes.section = section
+      if (sort_order !== undefined) changes.sort_order = sort_order
+      if (completed !== undefined) changes.completed = completed
+
+      if (Object.keys(changes).length === 0) return toolError('No task changes were supplied.')
+
+      if (section && section !== current.section && sort_order === undefined) {
+        try {
+          changes.parent_id = null
+          changes.sort_order = await nextSortOrder(auth.db, todo.id, section)
+        } catch (error) {
+          return toolError(`Could not determine task order: ${error instanceof Error ? error.message : String(error)}`)
+        }
+      }
+
+      const { data, error } = await auth.db
+        .from('tasks')
+        .update(changes)
+        .eq('id', task_id)
+        .select('id,created_at,title,notes,section,completed,sort_order')
+        .single<Task>()
+
+      if (error) return toolError(`Could not update task: ${error.message}`)
+      return {
+        content: [{ type: 'text', text: `Updated task “${data.title}”.\n${jsonText({ task: data })}` }],
+        structuredContent: { task: data },
+      }
+    },
+  )
+
+  server.registerTool(
+    'delete_task',
+    {
+      title: 'Delete a Regis Dashboard task',
+      description: 'Permanently delete one task. Resolve it with list_tasks first and pass its exact current title as confirmation. Ask the user for confirmation immediately before calling.',
+      inputSchema: {
+        task_id: z.string().regex(/^\d+$/).describe('Exact task ID returned by list_tasks'),
+        confirm_title: z.string().describe('Exact current task title, copied from list_tasks'),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+      securitySchemes: oauthSecurity,
+      _meta: { securitySchemes: oauthSecurity },
+    },
+    async ({ task_id, confirm_title }) => {
+      const auth = await authorize(authorizationHeader, 'tasks:delete')
+      if ('error' in auth) return auth.error
+
+      let todo: OutlineDocument
+      try { todo = await findDocument(auth.db) } catch (error) {
+        return toolError(`Could not resolve To Do: ${error instanceof Error ? error.message : String(error)}`)
+      }
+
+      const { data: current, error: readError } = await auth.db
+        .from('tasks')
+        .select('id,title')
+        .eq('id', task_id)
+        .eq('document_id', todo.id)
+        .maybeSingle<{ id: number | string; title: string }>()
+
+      if (readError) return toolError(`Could not read task before deletion: ${readError.message}`)
+      if (!current) return toolError(`No accessible task exists with ID ${task_id}.`)
+      if (confirm_title !== current.title) return toolError('Deletion refused: confirm_title does not exactly match the current task title.')
+
+      const { error } = await auth.db.from('tasks').delete().eq('id', task_id)
+      if (error) return toolError(`Could not delete task: ${error.message}`)
+
+      return {
+        content: [{ type: 'text', text: `Deleted task “${current.title}” (ID ${String(current.id)}).` }],
+        structuredContent: { deleted: true, task_id: String(current.id), title: current.title },
+      }
+    },
+  )
+
+  return server
+}
+
+type ToolListEnvelope = {
+  result?: {
+    tools?: Array<{
+      securitySchemes?: unknown
+      _meta?: { securitySchemes?: unknown }
+    }>
+  }
+}
+
+function addTopLevelToolSecuritySchemes(value: unknown) {
+  if (!value || typeof value !== 'object') return value
+
+  const envelope = value as ToolListEnvelope
+  for (const tool of envelope.result?.tools ?? []) {
+    // The MCP TypeScript SDK currently preserves OpenAI's compatibility
+    // mirror in _meta but omits the documented top-level extension field.
+    // Add it to the wire response so ChatGPT can bind OAuth to each tool.
+    tool.securitySchemes ??= tool._meta?.securitySchemes ?? oauthSecurity
+  }
+  return envelope
+}
+
+async function exposeTopLevelToolSecuritySchemes(response: Response) {
+  const contentType = response.headers.get('content-type') ?? ''
+  const body = await response.text()
+  let decoratedBody = body
+
+  if (contentType.includes('text/event-stream')) {
+    decoratedBody = body.split('\n').map((line) => {
+      const dataOffset = line.startsWith('data: ') ? 6 : line.startsWith('data:') ? 5 : -1
+      if (dataOffset < 0) return line
+
+      try {
+        return `data: ${JSON.stringify(addTopLevelToolSecuritySchemes(JSON.parse(line.slice(dataOffset))))}`
+      } catch {
+        return line
+      }
+    }).join('\n')
+  } else if (contentType.includes('application/json')) {
+    try {
+      decoratedBody = JSON.stringify(addTopLevelToolSecuritySchemes(JSON.parse(body)))
+    } catch {
+      decoratedBody = body
+    }
+  }
+
+  const headers = new Headers(response.headers)
+  headers.delete('content-length')
+  return new Response(decoratedBody, { status: response.status, statusText: response.statusText, headers })
+}
+
+const app = new Hono().basePath('/regis-hub-mcp-dev')
+
+app.get('/health', (context) => context.json({ ok: true, service: 'regis-hub-mcp-dev', environment: 'development' }))
+
+app.get('/.well-known/oauth-protected-resource', (context) => context.json({
+  resource: MCP_URL,
+  authorization_servers: [OAUTH_ISSUER],
+  scopes_supported: OAUTH_SCOPES,
+  bearer_methods_supported: ['header'],
+}, 200, { 'Cache-Control': 'public, max-age=300' }))
+
+app.all('/', async (context) => {
+  const authorizationHeader = context.req.header('Authorization')
+  const rawRequest = context.req.raw
+  const requestEnvelope = rawRequest.method === 'POST'
+    ? await rawRequest.clone().json().catch(() => null) as { method?: string } | null
+    : null
+
+  // Supabase cannot route the RFC 9728 origin-level well-known path to an
+  // individual Edge Function. Advertise the function-scoped metadata URL in
+  // the standard HTTP challenge so MCP clients can discover it reliably.
+  if (!bearerToken(authorizationHeader)) {
+    return context.json(
+      { error: 'unauthorized', error_description: 'OAuth authorization is required.' },
+      401,
+      {
+        'Cache-Control': 'no-store',
+        'WWW-Authenticate': `Bearer resource_metadata="${RESOURCE_METADATA_URL}", scope="${OAUTH_SCOPES.join(' ')}"`,
+        'Access-Control-Expose-Headers': 'WWW-Authenticate',
+      },
+    )
+  }
+
+  const server = makeServer(authorizationHeader)
+  const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined })
+  await server.connect(transport)
+  const response = await transport.handleRequest(rawRequest)
+  return requestEnvelope?.method === 'tools/list'
+    ? exposeTopLevelToolSecuritySchemes(response)
+    : response
+})
+
+Deno.serve(app.fetch)
+
