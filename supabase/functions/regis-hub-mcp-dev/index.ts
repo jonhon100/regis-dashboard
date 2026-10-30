@@ -292,6 +292,58 @@ function makeServer(authorizationHeader: string | undefined) {
   )
 
   server.registerTool(
+    'delete_outline_item',
+    {
+      title: 'Delete a REGIS HUB outline subtree',
+      description: 'Permanently delete one outline item and every nested descendant in any document. First use list_outline_items, show the user the exact parent and descendant count, and ask for confirmation immediately before calling.',
+      inputSchema: {
+        document_id: z.string().uuid(),
+        task_id: z.string().regex(/^\d+$/),
+        confirm_title: z.string().describe('Exact current title copied from list_outline_items'),
+        confirm_descendant_count: z.number().int().nonnegative().describe('Exact number of nested descendants shown to the user'),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+      securitySchemes: oauthSecurity,
+      _meta: { securitySchemes: oauthSecurity },
+    },
+    async ({ document_id, task_id, confirm_title, confirm_descendant_count }) => {
+      const auth = await authorize(authorizationHeader)
+      if ('error' in auth) return auth.error
+      try {
+        const document = await findDocument(auth.db, document_id)
+        const { data, error } = await auth.db.from('tasks')
+          .select('id,title,parent_id,document_id').eq('document_id', document.id)
+        if (error) return toolError(`Could not inspect the outline before deletion: ${error.message}`)
+        const rows = data ?? []
+        const current = rows.find((row) => String(row.id) === task_id)
+        if (!current) return toolError(`No accessible outline item exists with ID ${task_id} in ${document.title}.`)
+        if (confirm_title !== current.title) return toolError('Deletion refused: confirm_title does not exactly match the current outline item title.')
+        const descendants: Array<{ id: number | string; title: string; parent_id: number | string | null }> = []
+        const collect = (parentId: string) => {
+          for (const row of rows.filter((candidate) => String(candidate.parent_id) === parentId)) {
+            descendants.push(row)
+            collect(String(row.id))
+          }
+        }
+        collect(task_id)
+        if (confirm_descendant_count !== descendants.length) {
+          return toolError(`Deletion refused: the item currently has ${descendants.length} descendant(s), not ${confirm_descendant_count}. List the outline again and reconfirm with the user.`)
+        }
+        for (const row of [...descendants].reverse().concat(current)) {
+          const { error: deleteError } = await auth.db.from('tasks').delete().eq('id', row.id).eq('document_id', document.id)
+          if (deleteError) return toolError(`Deletion stopped while removing the confirmed subtree: ${deleteError.message}`)
+        }
+        return {
+          content: [{ type: 'text', text: `Deleted “${current.title}” and ${descendants.length} nested item(s) from ${document.title}.` }],
+          structuredContent: { deleted: true, document, task_id, title: current.title, descendant_count: descendants.length },
+        }
+      } catch (error) {
+        return toolError(`Could not delete outline item: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    },
+  )
+
+  server.registerTool(
     'move_outline_item',
     {
       title: 'Move or reparent a REGIS HUB outline item',
