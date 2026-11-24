@@ -22,7 +22,7 @@ assert.match(app, /dhl\.com\/global-en\/home\/tracking\.html\?tracking-id=/)
 assert.match(app, /fedex\.com\/fedextrack\/\?trknbr=/)
 assert.match(app, /ups\.com\/track\?tracknum=/)
 assert.match(app, /resolution=merge-duplicates/)
-assert.match(worker, /regis-hub-shell-v4/)
+assert.match(worker, /regis-hub-shell-v5/)
 
 console.log('Parts Orders / Shipments UI isolation and integration checks passed')
 
@@ -48,5 +48,8 @@ assert.match(app, /function parsePurchaseOrder\(text\)/)
 assert.match(app, /never uploaded or saved/)
 assert.match(app, /Review every field, then press Save order/)
 assert.match(app, /@media\(hover:hover\) and \(pointer:fine\)/)
+assert.match(app, /scale\(1\.06\)/, 'desktop order cards should use a clearly visible six-percent hover zoom')
+assert.match(app, /z-index:20/, 'hovered order cards should remain above neighbouring cards')
+assert.match(app, /\.records\{padding:30px 34px;margin:-30px -34px\}/, 'desktop card list should provide transform breathing room without reflow')
 assert.match(app, /table:'regis_parts_orders'/, 'Parts Orders should be subscribed to Realtime')
 
