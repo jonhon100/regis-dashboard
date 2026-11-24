@@ -22,6 +22,11 @@ assert.match(app, /dhl\.com\/global-en\/home\/tracking\.html\?tracking-id=/)
 assert.match(app, /fedex\.com\/fedextrack\/\?trknbr=/)
 assert.match(app, /ups\.com\/track\?tracknum=/)
 assert.match(app, /resolution=merge-duplicates/)
-assert.match(worker, /regis-hub-shell-v2/)
+assert.match(worker, /regis-hub-shell-v3/)
 
 console.log('Parts Orders / Shipments UI isolation and integration checks passed')
+
+// REGIS HUB completed-item cleanup regression guards
+assert.match(app, /id="deletecompleted"/, 'Delete completed control should exist')
+assert.match(app, /async function deleteCompleted\(\)/, 'bulk completed deletion handler should exist')
+assert.match(app, /e\.key==='Backspace'\|\|e\.key==='Delete'/, 'empty-row deletion should support Backspace and Delete')
