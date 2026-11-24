@@ -22,7 +22,7 @@ assert.match(app, /dhl\.com\/global-en\/home\/tracking\.html\?tracking-id=/)
 assert.match(app, /fedex\.com\/fedextrack\/\?trknbr=/)
 assert.match(app, /ups\.com\/track\?tracknum=/)
 assert.match(app, /resolution=merge-duplicates/)
-assert.match(worker, /regis-hub-shell-v7/)
+assert.match(worker, /regis-hub-shell-v8/)
 
 console.log('Parts Orders / Shipments UI isolation and integration checks passed')
 

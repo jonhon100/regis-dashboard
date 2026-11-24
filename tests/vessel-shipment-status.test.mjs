@@ -12,13 +12,18 @@ const orders = [
   {id: 3, boat_name: ' Sonora ', captain_name: 'Jones', flag: 'UK'},
   {id: 4, boat_name: 'SONORA', captain_name: 'smith', flag: 'usa', next_port: 'Miami'},
 ]
-let saved, failure, rendered = 0
+let saved, failure, rendered = 0, reminder
+const modal = {open:false, close(){this.open=false}}
+const reminderForm = {}
 const context = vm.createContext({
+  document: {documentElement:{clientWidth:390,clientHeight:750}},
+  $: selector => selector === '#modal' ? modal : reminderForm,
+  showModal: markup => {reminder=markup; modal.open=true},
   partsOrders: orders, esc: String, renderModule: () => rendered++, setSync() {},
   alert: message => { failure = message },
   api: async (path, request) => {
     saved = [path, request.method, JSON.parse(request.body)]
-    return [{shipment_status: saved[2].shipment_status}]
+    return [saved[2]]
   },
 })
 const start = source.indexOf('const STATUS_LABELS')
@@ -32,20 +37,26 @@ const form = {elements: Object.fromEntries(Object.entries({
   supplier_name: 'Vendor', purchase_order_number: 'NEW-PO', courier: 'UPS',
   order_date: '2026-11-24', tracking_number: 'NEW-TRACK', notes: 'Imported items',
 }).map(([key,value]) => [key,{value}]))}
-const picker = {}, dismiss = {}, box = {querySelector: key => key === 'select' ? picker : dismiss}
+const picker = {}, handlers = {}, box = {
+  style:{}, offsetHeight:120, querySelector: () => picker, contains: () => false,
+  matches(){return this.open}, showPopover(){this.open=true}, hidePopover(){this.open=false},
+}
 form.querySelector = () => box
-form.elements.boat_name.addEventListener = () => {}
+form.addEventListener = (name,fn) => {handlers[name]=fn}
+form.elements.boat_name.addEventListener = (name,fn) => {handlers[name]=fn}
 form.elements.boat_name.focus = () => {}
+form.elements.boat_name.getBoundingClientRect = () => ({top:50,bottom:80,left:30})
 context.setupVesselSuggestions(form)
-form.refreshVesselSuggestions()
-assert.ok(!box.hidden)
-assert.match(picker.innerHTML, /Previous port: Miami/)
-dismiss.onclick()
-assert.ok(box.hidden)
+handlers.input()
+assert.ok(box.open)
+assert.equal(box.style.top,'84px')
+assert.match(picker.innerHTML, /Next Port: Miami/)
+handlers.focusin({target:form.elements.captain_name})
+assert.ok(!box.open)
 assert.equal(form.elements.captain_name.value, '')
 form.refreshVesselSuggestions()
-picker.value = '0'
-picker.onchange()
+box.onclick({target:{closest: () => ({dataset:{vesselUse:'0'}})}})
+assert.ok(!box.open)
 assert.equal(form.elements.boat_name.value, 'Sonora')
 assert.equal(form.elements.captain_name.value, 'Smith')
 assert.equal(form.elements.flag.value, 'USA')
@@ -70,7 +81,27 @@ for (const value of ['shipped','broker_prealerted','delivered','awaiting_shipmen
   assert.equal(orders[1].shipment_status, value)
 }
 assert.equal(rendered, 4)
+orders[1].tracking_number=''
+await context.changeShipmentStatus({value:'shipped',dataset:{shipmentStatus:'2'}})
+assert.match(reminder, /Skip for Now/)
+modal.close()
+assert.equal(orders[1].shipment_status,'shipped')
+assert.ok(context.missingTracking(orders[1]))
+assert.match(context.trackingWarning(orders[1]), /Add Tracking Number/)
+const feedback={}, submit={}
+const trackingForm={isConnected:true,elements:{tracking_number:{value:' TEST-123 '}},querySelector:s=>s==='[type=submit]'?submit:feedback}
+await context.saveReminderTracking({preventDefault(){},currentTarget:trackingForm},orders[1])
+assert.deepEqual(saved,['/rest/v1/regis_parts_orders?id=eq.2','PATCH',{tracking_number:'TEST-123'}])
+assert.equal(orders[1].shipment_status,'shipped')
+assert.ok(!context.missingTracking(orders[1]))
+orders[1].shipment_status='awaiting_shipment'
+reminder=null
+await context.changeShipmentStatus({value:'shipped',dataset:{shipmentStatus:'2'}})
+assert.equal(reminder,null)
+orders[1].shipment_status='awaiting_shipment'
 context.api = async () => { throw new Error('Fixture failure') }
+await context.saveReminderTracking({preventDefault(){},currentTarget:trackingForm},orders[1])
+assert.match(feedback.textContent,/Fixture failure/)
 const select = {value:'shipped',dataset:{shipmentStatus:'2'}}
 await context.changeShipmentStatus(select)
 assert.equal(failure, 'Fixture failure')

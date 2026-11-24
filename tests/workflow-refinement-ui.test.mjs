@@ -43,6 +43,6 @@ assert.doesNotMatch(app, /document\.body\.style\.overflow|documentElement\.style
 // Status remains right-aligned in the flex row, but is larger and vertically centred.
 assert.match(app, /\.record-main\{display:flex;align-items:center;/)
 assert.match(app, /\.status\{display:inline-block;align-self:center;[^}]*padding:5px 11px;[^}]*font-size:12\.5px;font-weight:720/)
-assert.match(worker, /regis-hub-shell-v7/)
+assert.match(worker, /regis-hub-shell-v8/)
 
 console.log('REGIS HUB workflow refinement UI checks passed')
